@@ -16,4 +16,24 @@ TEST(URL, correct_components) {
   EXPECT_EQ(a.get_scheme(), "http");
   EXPECT_EQ(a.get_origin(), "http://hello.wa.bc");
   EXPECT_EQ(a.get_last_subpath(), "z");
+
+  url b("https://test.com");
+  EXPECT_EQ(b.get_last_subpath(), "");
+  EXPECT_EQ(b.get_base_domain(), "test.com");
+  EXPECT_EQ(b.get_scheme(), "https");
+  EXPECT_EQ(b.get_origin(), "https://test.com");
+}
+
+TEST(URL, mutate_components) {
+  url a("https://abc.xyz");
+  a.set_path("/helloworld");
+
+  EXPECT_EQ(a.get_last_subpath(), "helloworld");
+  EXPECT_EQ(a.to_string(), "https://abc.xyz/helloworld");
+
+  a = url("https://abc.xyz/existing/path");
+  a.set_path("/something/else");
+
+  EXPECT_EQ(a.get_last_subpath(), "else");
+  EXPECT_EQ(a.to_string(), "https://abc.xyz/something/else");
 }
