@@ -74,7 +74,12 @@ void url::set_path(std::string path) {
   }
 }
 
-std::string url::get_last_subpath() { return std::string(this->paths.front()); }
+std::string url::get_last_subpath() {
+  if (this->paths.empty()) {
+    return "";
+  }
+  return std::string(this->paths.front());
+}
 
 std::string url::get_base_domain() const { return this->base; }
 
