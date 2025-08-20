@@ -13,9 +13,9 @@
 #include <unordered_set>
 #include <vector>
 
-#define FLAC "flac"
 #define HREF_ATTR "href"
 #define ID_ATTR "id"
+#define H2_ALBUM_TITLE_OCCURRING 4
 
 // https://downloads.khinsider.com/game-soundtracks/album/robotics-notes-original-soundtrack
 
@@ -25,6 +25,38 @@ size_t data_stream_recv(void *contents, size_t size, size_t nmemb,
   std::string *str = static_cast<std::string *>(userp);
   str->append(static_cast<char *>(contents), realsize);
   return realsize;
+}
+
+std::string get_album_title(GumboNode *node) {
+  std::stack<GumboNode *> s;
+  s.push(node);
+  u_int8_t h2_occurrences = 0;
+  while (!s.empty()) {
+    GumboNode *n = s.top();
+    s.pop();
+
+    if (n->type != GUMBO_NODE_ELEMENT) {
+      continue;
+    }
+
+    GumboElement *el = &n->v.element;
+    GumboVector *children = &el->children;
+
+    if (n->v.element.tag == GUMBO_TAG_H2) {
+      ++h2_occurrences;
+      if (h2_occurrences == H2_ALBUM_TITLE_OCCURRING) {
+        GumboNode *child = static_cast<GumboNode *>(children->data[0]);
+        return child->v.text.text;
+      }
+    }
+
+    for (unsigned int i = 0; i < children->length; ++i) {
+      GumboNode *child = static_cast<GumboNode *>(children->data[i]);
+      s.push(child);
+    }
+  }
+
+  return "";
 }
 
 GumboNode *get_songlist(GumboNode *node) {
@@ -91,8 +123,10 @@ void get_songlinks(GumboNode *songlist,
   }
 }
 
-std::unique_ptr<url> get_anchor_flac_url(GumboNode *root) {
+std::unique_ptr<url> get_anchor_file_url(GumboNode *root,
+                                         std::vector<std::string> &file_exts) {
   std::stack<GumboNode *> s;
+  std::unordered_map<std::string, std::unique_ptr<url>> file_urls;
   s.push(root);
 
   while (!s.empty()) {
@@ -111,10 +145,15 @@ std::unique_ptr<url> get_anchor_flac_url(GumboNode *root) {
           gumbo_get_attribute(&n->v.element.attributes, HREF_ATTR);
       if (href_attr != nullptr) {
         size_t str_n = strlen(href_attr->value);
-        bool is_flac =
-            strcmp(href_attr->value + str_n - strlen(FLAC), FLAC) == 0;
-        if (is_flac) {
-          return std::make_unique<url>(url(href_attr->value));
+        for (std::string &file_ext : file_exts) {
+          bool is_target_file_ext =
+              strcmp(href_attr->value + str_n - file_ext.length(),
+                     file_ext.c_str()) == 0;
+          if (is_target_file_ext) {
+            file_urls.emplace(file_ext,
+                              std::make_unique<url>(url(href_attr->value)));
+            break;
+          }
         }
       }
     }
@@ -124,6 +163,13 @@ std::unique_ptr<url> get_anchor_flac_url(GumboNode *root) {
       s.push(child);
     }
   }
+  for (std::string &file_ext : file_exts) {
+    auto it = file_urls.find(file_ext);
+    if (it != file_urls.end() && it->second) {
+      return std::move(it->second);
+    }
+  }
+
   return nullptr;
 }
 
@@ -185,15 +231,17 @@ void download_file(const std::string &file_name,
   }
 }
 
-void scrape_song_dl(url &song_dl, std::string &directory) {
+void scrape_song_dl(url &song_dl, std::string &directory,
+                    std::vector<std::string> &file_exts) {
   CURL *curl = curl_easy_init();
   std::string html = fetch_html(song_dl);
   GumboOutput *output = gumbo_parse(html.c_str());
-  std::unique_ptr<url> flac_url = get_anchor_flac_url(output->root);
-  std::string file_name = flac_url->get_last_subpath();
+  std::unique_ptr<url> file_url = get_anchor_file_url(output->root, file_exts);
+  std::cout << file_url->to_string() << std::endl;
+  std::string file_name = file_url->get_last_subpath();
   std::filesystem::path resolved_path =
       std::filesystem::path(directory) / url::decode_uri(file_name);
-  download_file(resolved_path.string(), flac_url);
+  download_file(resolved_path.string(), file_url);
 }
 
 int main(int argc, char *argv[]) {
@@ -204,11 +252,13 @@ int main(int argc, char *argv[]) {
   options.add_options()("input", "Download page for the album/soundtrack",
                         cxxopts::value<std::string>())(
       "d,directory", "Output directory",
-      cxxopts::value<std::string>()->default_value(
-          std::filesystem::current_path().string()))(
-      "t,type", "Type of file to download",
-      cxxopts::value<std::string>()->default_value(FLAC))("h,help",
-                                                          "Print usage");
+      cxxopts::value<std::string>()->default_value(""))(
+      "t,type",
+      "Comma-separated list of types of file extensions to download with "
+      "priority. Left-most item will be downloaded first, and if not found, "
+      "the program will attempt to download the next file extension.",
+      cxxopts::value<std::vector<std::string>>()->default_value("flac,mp3"))(
+      "h,help", "Print usage");
 
   options.parse_positional({"input"});
 
@@ -219,8 +269,22 @@ int main(int argc, char *argv[]) {
     return 0;
   }
 
+  CURL *curl = curl_easy_init();
+  url download_page(result["input"].as<std::string>());
+  std::string html = fetch_html(download_page);
+  std::unordered_set<std::string> songlinks;
+  GumboOutput *output = gumbo_parse(html.c_str());
+  GumboNode *songlist = get_songlist(output->root);
+  get_songlinks(songlist, songlinks);
+  url song_dl(download_page);
+  std::cout << get_album_title(output->root) << std::endl;
   // make the directory if it doesnt exist
   std::string directory = result["directory"].as<std::string>();
+  if (directory.length() == 0) {
+    std::filesystem::path resolved_path =
+        std::filesystem::current_path() / get_album_title(output->root);
+    directory = resolved_path.string();
+  }
   if (!std::filesystem::exists(directory)) {
     bool is_success = std::filesystem::create_directory(directory);
     if (!is_success) {
@@ -231,22 +295,16 @@ int main(int argc, char *argv[]) {
   else if (!std::filesystem::is_directory(directory)) {
     throw std::runtime_error(directory + " must be a folder");
   }
-
-  CURL *curl = curl_easy_init();
-  url download_page(result["input"].as<std::string>());
-  std::string html = fetch_html(download_page);
-  std::unordered_set<std::string> songlinks;
-  GumboOutput *output = gumbo_parse(html.c_str());
-  GumboNode *songlist = get_songlist(output->root);
-  get_songlinks(songlist, songlinks);
-  url song_dl(download_page);
   size_t i = 1, n = songlinks.size();
+  std::vector<std::string> file_exts =
+      result["type"].as<std::vector<std::string>>();
+
   for (std::unordered_set<std::string>::iterator el = songlinks.begin();
        el != songlinks.end(); ++el) {
     song_dl.set_path(*el);
 
     std::cout << "Downloading " << i << " of " << n << std::endl;
-    scrape_song_dl(song_dl, directory);
+    scrape_song_dl(song_dl, directory, file_exts);
 
     ++i;
   }
