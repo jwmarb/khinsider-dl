@@ -1,7 +1,8 @@
 {
   "dependencies": [
     "curl",
+    "gtest",
     "gumbo",
-    "gtest"
+    "cxxopts"
   ]
 }

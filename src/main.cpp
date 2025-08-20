@@ -1,6 +1,8 @@
 #include "url.h"
 #include <cstring>
 #include <curl/curl.h>
+#include <cxxopts.hpp>
+#include <filesystem>
 #include <fstream>
 #include <gumbo.h>
 #include <iostream>
@@ -11,9 +13,11 @@
 #include <unordered_set>
 #include <vector>
 
-#define FLAC ".flac"
+#define FLAC "flac"
 #define HREF_ATTR "href"
 #define ID_ATTR "id"
+
+// https://downloads.khinsider.com/game-soundtracks/album/robotics-notes-original-soundtrack
 
 size_t data_stream_recv(void *contents, size_t size, size_t nmemb,
                         void *userp) {
@@ -181,19 +185,55 @@ void download_file(const std::string &file_name,
   }
 }
 
-void scrape_song_dl(url &song_dl) {
+void scrape_song_dl(url &song_dl, std::string &directory) {
   CURL *curl = curl_easy_init();
   std::string html = fetch_html(song_dl);
   GumboOutput *output = gumbo_parse(html.c_str());
   std::unique_ptr<url> flac_url = get_anchor_flac_url(output->root);
   std::string file_name = flac_url->get_last_subpath();
-  download_file(url::decode_uri(file_name), flac_url);
+  std::filesystem::path resolved_path =
+      std::filesystem::path(directory) / url::decode_uri(file_name);
+  download_file(resolved_path.string(), flac_url);
 }
 
 int main(int argc, char *argv[]) {
+
+  cxxopts::Options options("khinsider-dl",
+                           "A tool for bulk downloading songs from khinsider");
+
+  options.add_options()("input", "Download page for the album/soundtrack",
+                        cxxopts::value<std::string>())(
+      "d,directory", "Output directory",
+      cxxopts::value<std::string>()->default_value(
+          std::filesystem::current_path().string()))(
+      "t,type", "Type of file to download",
+      cxxopts::value<std::string>()->default_value(FLAC))("h,help",
+                                                          "Print usage");
+
+  options.parse_positional({"input"});
+
+  cxxopts::ParseResult result = options.parse(argc, argv);
+
+  if (result.count("help") || !result.count("input")) {
+    std::cout << options.help() << std::endl;
+    return 0;
+  }
+
+  // make the directory if it doesnt exist
+  std::string directory = result["directory"].as<std::string>();
+  if (!std::filesystem::exists(directory)) {
+    bool is_success = std::filesystem::create_directory(directory);
+    if (!is_success) {
+      throw std::runtime_error("Failed to create " + directory);
+    }
+  }
+  // but if it exists, make sure it is a folder
+  else if (!std::filesystem::is_directory(directory)) {
+    throw std::runtime_error(directory + " must be a folder");
+  }
+
   CURL *curl = curl_easy_init();
-  url download_page("https://downloads.khinsider.com/game-soundtracks/album/"
-                    "robotics-notes-original-soundtrack");
+  url download_page(result["input"].as<std::string>());
   std::string html = fetch_html(download_page);
   std::unordered_set<std::string> songlinks;
   GumboOutput *output = gumbo_parse(html.c_str());
@@ -206,7 +246,7 @@ int main(int argc, char *argv[]) {
     song_dl.set_path(*el);
 
     std::cout << "Downloading " << i << " of " << n << std::endl;
-    scrape_song_dl(song_dl);
+    scrape_song_dl(song_dl, directory);
 
     ++i;
   }
