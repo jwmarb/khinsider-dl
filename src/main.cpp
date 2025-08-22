@@ -1,3 +1,4 @@
+#include "curl_handler.h"
 #include "url.h"
 #include <cstring>
 #include <curl/curl.h>
@@ -18,14 +19,6 @@
 #define H2_ALBUM_TITLE_OCCURRING 4
 
 // https://downloads.khinsider.com/game-soundtracks/album/robotics-notes-original-soundtrack
-
-size_t data_stream_recv(void *contents, size_t size, size_t nmemb,
-                        void *userp) {
-  size_t realsize = size * nmemb;
-  std::string *str = static_cast<std::string *>(userp);
-  str->append(static_cast<char *>(contents), realsize);
-  return realsize;
-}
 
 std::string get_album_title(GumboNode *node) {
   std::stack<GumboNode *> s;
@@ -178,15 +171,16 @@ std::string fetch_html(url &link) {
   std::string link_str = link.to_string();
   if (curl != nullptr) {
     CURLcode res;
-    std::string html;
+    html_writer writer;
+
     curl_easy_setopt(curl, CURLOPT_URL, link_str.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &html);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, data_stream_recv);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &writer);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_handler);
     res = curl_easy_perform(curl);
     curl_easy_cleanup(curl);
 
     if (res == CURLE_OK) {
-      return html;
+      return writer.get_html();
     }
 
     throw std::runtime_error(std::string(curl_easy_strerror(res)));
@@ -195,34 +189,27 @@ std::string fetch_html(url &link) {
   throw std::runtime_error("Failed to initialize cURL");
 }
 
-size_t file_callback(void *contents, size_t size, size_t nmemb,
-                     std::ofstream *file) {
-  size_t total_size = size * nmemb;
-  file->write(static_cast<char *>(contents), total_size);
-  return total_size;
-}
-
 void download_file(const std::string &file_name,
                    const std::unique_ptr<url> &dl) {
   CURL *curl = curl_easy_init();
 
   if (curl != nullptr) {
-    std::ofstream file(file_name, std::ios::binary);
+    file_writer writer(file_name);
 
-    if (!file.is_open()) {
+    if (!writer.is_open()) {
       throw std::runtime_error("Failed to open file: " + file_name);
     }
 
     std::string dl_link = dl->to_string();
     curl_easy_setopt(curl, CURLOPT_URL, dl_link.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, file_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &file);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_handler);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &writer);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION,
                      1); // follow redirects, just in case
 
     CURLcode res = curl_easy_perform(curl);
 
-    file.close();
+    writer.close();
     curl_easy_cleanup(curl);
 
     if (res != CURLE_OK) {

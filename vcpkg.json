@@ -1,8 +1,3 @@
 {
-  "dependencies": [
-    "curl",
-    "gtest",
-    "gumbo",
-    "cxxopts"
-  ]
+  "dependencies": ["curl", "cxxopts", "gtest", "gumbo"]
 }

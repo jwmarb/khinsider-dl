@@ -1,0 +1,3 @@
+[submodule "barkeep"]
+	path = barkeep
+	url = https://github.com/oir/barkeep.git
