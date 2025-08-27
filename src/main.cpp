@@ -194,20 +194,44 @@ void download_file(const std::string &file_name,
   CURL *curl = curl_easy_init();
 
   if (curl != nullptr) {
-    file_writer writer(file_name);
+    std::string dl_link = dl->to_string();
+
+    // Initially fetch the content headers to get the total download size
+    curl_easy_setopt(curl, CURLOPT_URL, dl_link.c_str());
+    curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
+    CURLcode res = curl_easy_perform(curl);
+
+    if (res != CURLE_OK) {
+      curl_easy_cleanup(curl);
+      throw std::runtime_error("Failed to fetch download headers for cURL");
+    }
+
+    curl_off_t content_length = -1;
+    res = curl_easy_getinfo(curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T,
+                            &content_length);
+
+    if (res != CURLE_OK) {
+      curl_easy_cleanup(curl);
+      throw std::runtime_error(
+          "Failed to get download size from cURL response");
+    }
+
+    file_writer writer(file_name, content_length);
 
     if (!writer.is_open()) {
+      curl_easy_cleanup(curl);
       throw std::runtime_error("Failed to open file: " + file_name);
     }
 
-    std::string dl_link = dl->to_string();
-    curl_easy_setopt(curl, CURLOPT_URL, dl_link.c_str());
+    // change options for actual download
+    curl_easy_setopt(curl, CURLOPT_NOBODY, 0L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_handler);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &writer);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progress_handler);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &writer);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION,
-                     1); // follow redirects, just in case
 
-    CURLcode res = curl_easy_perform(curl);
+    res = curl_easy_perform(curl);
 
     writer.close();
     curl_easy_cleanup(curl);
@@ -224,7 +248,6 @@ void scrape_song_dl(url &song_dl, std::string &directory,
   std::string html = fetch_html(song_dl);
   GumboOutput *output = gumbo_parse(html.c_str());
   std::unique_ptr<url> file_url = get_anchor_file_url(output->root, file_exts);
-  std::cout << file_url->to_string() << std::endl;
   std::string file_name = file_url->get_last_subpath();
   std::filesystem::path resolved_path =
       std::filesystem::path(directory) / url::decode_uri(file_name);
@@ -286,14 +309,18 @@ int main(int argc, char *argv[]) {
   std::vector<std::string> file_exts =
       result["type"].as<std::vector<std::string>>();
 
+  std::cout << "Downloading " << download_page.to_string() << std::endl;
+
   for (std::unordered_set<std::string>::iterator el = songlinks.begin();
        el != songlinks.end(); ++el) {
     song_dl.set_path(*el);
 
-    std::cout << "Downloading " << i << " of " << n << std::endl;
     scrape_song_dl(song_dl, directory, file_exts);
 
     ++i;
   }
+
+  std::cout << "All files downloaded to " << "\"" << directory << "\""
+            << std::endl;
   return 0;
 }
